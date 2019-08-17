@@ -134,17 +134,12 @@ def distances(vecs1,vecs2):
     return dists
 
 @tf.custom_gradient
-def quant_calc(qu_vecs,in_vecs):
-    dists = distances(in_vecs,qu_vecs)
-
-    closest_vec_idx = tf.argmin(dists,axis=1)
-    closest_vec_values = in_vecs#tf.gather(qu_vecs,closest_vec_idx,axis=0)
+def quant_calc(qu_vecs,chosen_idxs,in_vecs):
+    closest_vec_values = tf.gather(qu_vecs,chosen_idxs,axis=0)
 
     def grad(dy):
-        return tf.zeros_like(qu_vecs),dy
+        return tf.zeros_like(qu_vecs),tf.zeros_like(chosen_idxs),dy
     return closest_vec_values,grad
-
-
 
 class QuantBlock:
     def __init__(self,QUANT_SIZE,QUANT_DIM):
@@ -152,15 +147,23 @@ class QuantBlock:
         self.vectors = tf.Variable(init_vals,name="vecs")
         self.vector_counts = tf.Variable(tf.zeros(shape=[QUANT_SIZE],dtype=tf.float32),name="vecs")
         self.QUANT_SIZE = QUANT_SIZE
+        self.QUANT_DIM = QUANT_DIM
 
     def calc(self, input):
-        out_val = quant_calc(self.vectors,input)
-        return out_val
+        dists = distances(input,self.vectors)
 
-    def calc_other_vals(self,input):
-        distances = tf.matmul(input,self.vectors,transpose_b=True)
+        #soft_vals = tf.softmax(,axis=1)
+        inv_dists = 1.0/(dists+0.000001)
+        closest_vec_idx = tf.multinomial((inv_dists*700),1)
+        closest_vec_idx = tf.reshape(closest_vec_idx,shape=[closest_vec_idx.get_shape().as_list()[0]])
+        #print(closest_vec_idx.shape)
+        #closest_vec_idx = tf.argmin(dists,axis=1)
 
-        closest_vec_idx = tf.argmin(distances,axis=1)
+        out_val = quant_calc(self.vectors,closest_vec_idx,input)
+        other_losses, update = self.calc_other_vals(input,closest_vec_idx)
+        return out_val,other_losses, update
+
+    def calc_other_vals(self,input,closest_vec_idx):
         closest_vec_values = tf.gather(self.vectors,closest_vec_idx)
 
         codebook_loss = tf.reduce_sum(sqr(closest_vec_values - tf.stop_gradient(input)))
@@ -174,9 +177,15 @@ class QuantBlock:
 
         return commitment_loss + codebook_loss,update_counts
 
-    #def resample_bad_vecs(self,input):
-        #sample_vals = tf.random_normal([QUANT_SIZE,QUANT_DIM],dtype=tf.float32)
-        #tf.equal(self.vector_counts)
+    def resample_bad_vecs(self):
+        #sample_vals = tf.random_normal([self.QUANT_SIZE,self.QUANT_DIM],dtype=tf.float32)
+        #equal_vals = tf.cast(tf.equal(self.vector_counts,0),dtype=tf.float32)
+        #equal_vals= tf.reshape(equal_vals,shape=[self.QUANT_SIZE,1])
+        #new_vecs = self.vectors - self.vectors * equal_vals + sample_vals * equal_vals
+        #vec_assign = tf.assign(self.vectors,new_vecs)
+        zero_assign = tf.assign(self.vector_counts,tf.zeros_like(self.vector_counts))
+        #tot_assign = tf.group([vec_assign,zero_assign])
+        return zero_assign#tot_assign
 
 def prod(l):
     p = 1
@@ -188,14 +197,9 @@ class QuantBlockImg(QuantBlock):
     def calc(self,input):
         in_shape = input.get_shape().as_list()
         flat_val = tf.reshape(input,[prod(in_shape[:3]),in_shape[3]])
-        out = QuantBlock.calc(self,flat_val)
+        out,o1,o2 = QuantBlock.calc(self,flat_val)
         restored = tf.reshape(out,in_shape)
-        return restored
-    def calc_other_vals(self,input):
-        in_shape = input.get_shape().as_list()
-        flat_val = tf.reshape(input,[prod(in_shape[:3]),in_shape[3]])
-        return QuantBlock.calc_other_vals(self,flat_val)
-
+        return restored,o1,o2
 
 class MainCalc:
     def __init__(self):
@@ -208,17 +212,18 @@ class MainCalc:
     def calc(self,input):
         out1 = self.convpool1.calc(input)
         out2 = self.convpool2.calc(out1)
-        quant = self.quant_block.calc(out2)
+        quant,quant_loss,update = self.quant_block.calc(out2)
         print(quant.shape)
         dec1 = self.convunpool1.calc(out2)
         decoded_final = self.convunpool2.calc(dec1)
 
         reconstr_loss = tf.reduce_sum(sqr(decoded_final - input))
 
-        quant_loss,update = self.quant_block.calc_other_vals(out2)
         tot_loss = reconstr_loss + quant_loss
         return update,tot_loss, reconstr_loss,decoded_final
 
+    def periodic_update(self):
+        return self.quant_block.resample_bad_vecs()
 
 mc = MainCalc()
 place = tf.placeholder(shape=[4,384,512,3],dtype=tf.float32)
@@ -226,6 +231,7 @@ place = tf.placeholder(shape=[4,384,512,3],dtype=tf.float32)
 optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
 
 mc_update, loss, reconst_l, final_output = mc.calc(place)
+resample_update = mc.periodic_update()
 
 opt = optimizer.minimize(loss)
 
@@ -249,18 +255,22 @@ saver = tf.train.Saver(max_to_keep=50)
 SAVE_DIR = "data/save_model/"
 os.makedirs(SAVE_DIR,exist_ok=True)
 SAVE_NAME = SAVE_DIR+"model.ckpt"
+logfilename = "data/count_log.txt"
+logfile = open(logfilename,'w')
 #print(imgs[0])
 with tf.Session() as sess:
-    sess.run(tf.initialize_all_variables())
+    sess.run(tf.global_variables_initializer())
+    print_num = 0
     if os.path.exists(SAVE_DIR+"checkpoint"):
         print("reloaded")
-        print(tf.train.latest_checkpoint(SAVE_DIR))
-        saver.restore(sess, tf.train.latest_checkpoint(SAVE_DIR))
+        checkpoint = tf.train.latest_checkpoint(SAVE_DIR)
+        print(checkpoint)
+        print_num = int(checkpoint.split('-')[1])
+        saver.restore(sess, checkpoint)
 
     batch = []
-    print_num = 0
     while True:
-        for x in range(2):
+        for x in range(5):
             random.shuffle(imgs)
             tot_loss = 0
             rec_loss = 0
@@ -276,29 +286,34 @@ with tf.Session() as sess:
                     rec_loss += cur_rec
                     batch = []
 
+            logfile.write(",".join([str(val) for val in sess.run(mc.quant_block.vector_counts)]))
+            logfile.flush()
+            sess.run(resample_update)
+
             print("epoc ended, loss: {}   {}".format(tot_loss/count,rec_loss/count))
 
-        print(",".join([str(val) for val in sess.run(mc.quant_block.vector_counts)[:20]]))
+        print("save started")
         print_num += 1
         saver.save(sess,SAVE_NAME,global_step=print_num)
         img_batch = []
         fold_batch = []
-        for img,fold in zip(orig_imgs,fold_names):
+        for count,(img,fold) in enumerate(zip(orig_imgs,fold_names)):
             img_batch.append((img))
             fold_batch.append((fold))
             if len(img_batch) == 4:
-                print("batch start")
                 batch_outs = sess.run(final_output,feed_dict={
                     place:np.stack(img_batch)
                 })
                 pixel_vals = (batch_outs * 256).astype(np.uint8)
                 for out,out_fold in zip(pixel_vals,fold_batch):
-                    print(out.shape)
+                    #print(out.shape)
                     img = Image.fromarray(out)
                     img_path = "data/result/{}{}.jpg".format(out_fold,print_num)
-                    print(img_path)
+                    #print(img_path)
                     img.save(img_path)
                 img_batch = []
                 fold_batch = []
+        print("save finished")
+
 
 #print(out.shape)
