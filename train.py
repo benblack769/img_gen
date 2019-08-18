@@ -127,6 +127,7 @@ class Deconv2:
 
 
 def distances(vecs1,vecs2):
+    return tf.matmul(vecs1,vecs2,transpose_b=True)
     vecs2 = tf.transpose(vecs2)
     dists = (tf.reduce_sum(sqr(vecs1), axis=1, keepdims=True)
              - 2 * tf.matmul(vecs1, vecs2)
@@ -153,11 +154,11 @@ class QuantBlock:
         dists = distances(input,self.vectors)
 
         #soft_vals = tf.softmax(,axis=1)
-        inv_dists = 1.0/(dists+0.000001)
-        closest_vec_idx = tf.multinomial((inv_dists*700),1)
-        closest_vec_idx = tf.reshape(closest_vec_idx,shape=[closest_vec_idx.get_shape().as_list()[0]])
+        #inv_dists = 1.0/(dists+0.000001)
+        #closest_vec_idx = tf.multinomial((inv_dists),1)
+        #closest_vec_idx = tf.reshape(closest_vec_idx,shape=[closest_vec_idx.get_shape().as_list()[0]])
         #print(closest_vec_idx.shape)
-        #closest_vec_idx = tf.argmin(dists,axis=1)
+        closest_vec_idx = tf.argmin(dists,axis=1)
 
         out_val = quant_calc(self.vectors,closest_vec_idx,input)
         other_losses, update = self.calc_other_vals(input,closest_vec_idx)
@@ -226,7 +227,7 @@ class MainCalc:
         return self.quant_block.resample_bad_vecs()
 
 mc = MainCalc()
-place = tf.placeholder(shape=[4,384,512,3],dtype=tf.float32)
+place = tf.placeholder(shape=[4,192,256,3],dtype=tf.float32)
 
 optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
 
@@ -239,7 +240,7 @@ orig_imgs = []
 orig_filenames = []
 for img_name in os.listdir("data/input_data"):
     with Image.open("data/input_data/"+img_name) as img:
-        if img.size[1] == 384:
+        if img.size[1] == 192:
             orig_imgs.append(np.array(img).astype(np.float32)/256.0)
             orig_filenames.append(img_name)
 
