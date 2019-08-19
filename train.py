@@ -127,44 +127,63 @@ class Deconv2:
 
 
 def distances(vecs1,vecs2):
+    return tf.matmul(vecs1,vecs2,transpose_b=True)
     vecs2 = tf.transpose(vecs2)
     dists = (tf.reduce_sum(sqr(vecs1), axis=1, keepdims=True)
              - 2 * tf.matmul(vecs1, vecs2)
              + tf.reduce_sum(sqr(vecs2), axis=0, keepdims=True))
     return dists
 
+def gather_multi_idxs(qu_vecs,chosen_idxs):
+    idx_shape = chosen_idxs.get_shape().as_list()
+    qu_shape = qu_vecs.get_shape().as_list()
+    idx_add = tf.range(qu_shape[0],dtype=tf.int64)*qu_shape[1] + chosen_idxs
+    idx_transform = tf.reshape(idx_add,[prod(idx_shape)])
+    rqu_vecs = tf.reshape(qu_vecs,[qu_shape[0]*qu_shape[1],qu_shape[2]])
+
+    closest_vec_values = tf.gather(rqu_vecs,idx_transform,axis=0)
+
+    combined_vec_vals = tf.reshape(closest_vec_values,[idx_shape[0],qu_shape[0]*qu_shape[2]])
+
+    return combined_vec_vals
+
 @tf.custom_gradient
 def quant_calc(qu_vecs,chosen_idxs,in_vecs):
-    closest_vec_values = tf.gather(qu_vecs,chosen_idxs,axis=0)
+    closest_vec_values = gather_multi_idxs(qu_vecs,chosen_idxs)
 
     def grad(dy):
         return tf.zeros_like(qu_vecs),tf.zeros_like(chosen_idxs),dy
     return closest_vec_values,grad
 
 class QuantBlock:
-    def __init__(self,QUANT_SIZE,QUANT_DIM):
-        init_vals = tf.random_normal([QUANT_SIZE,QUANT_DIM],dtype=tf.float32)
+    def __init__(self,QUANT_SIZE,NUM_QUANT,QUANT_DIM):
+        init_vals = tf.random_normal([NUM_QUANT,QUANT_SIZE,QUANT_DIM],dtype=tf.float32)
         self.vectors = tf.Variable(init_vals,name="vecs")
-        self.vector_counts = tf.Variable(tf.zeros(shape=[QUANT_SIZE],dtype=tf.float32),name="vecs")
+        self.vector_counts = tf.Variable(tf.zeros(shape=[NUM_QUANT,QUANT_SIZE],dtype=tf.float32),name="vecs")
         self.QUANT_SIZE = QUANT_SIZE
         self.QUANT_DIM = QUANT_DIM
+        self.NUM_QUANT = NUM_QUANT
 
     def calc(self, input):
-        dists = distances(input,self.vectors)
+        orig_size = input.get_shape().as_list()
+        div_input = tf.reshape(input,[orig_size[0],self.NUM_QUANT,self.QUANT_DIM])
+        dists = tf.einsum("ijk,jmk->ijm",div_input,self.vectors)
+
+        #dists = distances(input,self.vectors)
 
         #soft_vals = tf.softmax(,axis=1)
-        inv_dists = 1.0/(dists+0.000001)
-        closest_vec_idx = tf.multinomial((inv_dists*700),1)
-        closest_vec_idx = tf.reshape(closest_vec_idx,shape=[closest_vec_idx.get_shape().as_list()[0]])
+        #inv_dists = 1.0/(dists+0.000001)
+        #closest_vec_idx = tf.multinomial((inv_dists),1)
+        #closest_vec_idx = tf.reshape(closest_vec_idx,shape=[closest_vec_idx.get_shape().as_list()[0]])
         #print(closest_vec_idx.shape)
-        #closest_vec_idx = tf.argmin(dists,axis=1)
+        closest_vec_idx = tf.argmin(dists,axis=-1)
 
         out_val = quant_calc(self.vectors,closest_vec_idx,input)
         other_losses, update = self.calc_other_vals(input,closest_vec_idx)
-        return out_val,other_losses, update
+        return out_val, other_losses, update
 
     def calc_other_vals(self,input,closest_vec_idx):
-        closest_vec_values = tf.gather(self.vectors,closest_vec_idx)
+        closest_vec_values = gather_multi_idxs(self.vectors,closest_vec_idx)
 
         codebook_loss = tf.reduce_sum(sqr(closest_vec_values - tf.stop_gradient(input)))
 
@@ -204,9 +223,9 @@ class QuantBlockImg(QuantBlock):
 class MainCalc:
     def __init__(self):
         self.convpool1 = Convpool2(3,64,default_activ)
-        self.convpool2 = Convpool2(64,64,None)
-        self.quant_block = QuantBlockImg(128,64)
-        self.convunpool1 = Deconv2(64,64,default_activ)
+        self.convpool2 = Convpool2(64,128,None)
+        self.quant_block = QuantBlockImg(128,4,32)
+        self.convunpool1 = Deconv2(128,64,default_activ)
         self.convunpool2 = Deconv2(64,3,tf.nn.sigmoid)
 
     def calc(self,input):
@@ -226,7 +245,7 @@ class MainCalc:
         return self.quant_block.resample_bad_vecs()
 
 mc = MainCalc()
-place = tf.placeholder(shape=[4,384,512,3],dtype=tf.float32)
+place = tf.placeholder(shape=[4,192,256,3],dtype=tf.float32)
 
 optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
 
@@ -239,7 +258,7 @@ orig_imgs = []
 orig_filenames = []
 for img_name in os.listdir("data/input_data"):
     with Image.open("data/input_data/"+img_name) as img:
-        if img.size[1] == 384:
+        if img.size[1] == 192:
             orig_imgs.append(np.array(img).astype(np.float32)/256.0)
             orig_filenames.append(img_name)
 
