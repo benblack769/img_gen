@@ -96,17 +96,29 @@ def avgpool2d(input,window_shape):
 def default_activ(input):
     return tf.nn.relu(input)
 
+
 class Convpool2:
-    def __init__(self,in_dim,out_dim,out_activ):
+    def __init__(self,in_dim,out_dim,out_activ,use_batchnorm=True):
         self.CONV_SIZE = [3,3]
         self.POOL_SHAPE = [2,2]
-        self.conv1 = Conv2d(in_dim,out_dim,self.CONV_SIZE,default_activ)
-        self.conv2 = Conv2d(out_dim,out_dim,self.CONV_SIZE,out_activ,strides=self.POOL_SHAPE)
+        self.out_activ = out_activ
+        self.use_batchnorm = use_batchnorm
+        self.bn1 = tf.layers.BatchNormalization()
+        if self.use_batchnorm:
+            self.bn2 = tf.layers.BatchNormalization()
+        self.conv1 = Conv2d(in_dim,out_dim,self.CONV_SIZE,None)
+        self.conv2 = Conv2d(out_dim,out_dim,self.CONV_SIZE,None,strides=self.POOL_SHAPE)
 
     def calc(self,in_vec):
         cur_vec = in_vec
         cur_vec = self.conv1.calc(cur_vec)
+        cur_vec = self.bn1(cur_vec)
+        cur_vec = default_activ(cur_vec)
         cur_vec = self.conv2.calc(cur_vec)
+        if self.use_batchnorm:
+            cur_vec = self.bn2(cur_vec)*0.1
+        if self.out_activ is not None:
+            cur_vec = self.out_activ(cur_vec)
         #cur_vec = avgpool2d(cur_vec,self.POOL_SHAPE)
         return cur_vec
 
@@ -157,7 +169,7 @@ def quant_calc(qu_vecs,chosen_idxs,in_vecs):
 
 class QuantBlock:
     def __init__(self,QUANT_SIZE,NUM_QUANT,QUANT_DIM):
-        init_vals = tf.random_normal([NUM_QUANT,QUANT_SIZE,QUANT_DIM],dtype=tf.float32)
+        init_vals = tf.random_normal([NUM_QUANT,QUANT_SIZE,QUANT_DIM],dtype=tf.float32)*0.1
         self.vectors = tf.Variable(init_vals,name="vecs")
         self.vector_counts = tf.Variable(tf.zeros(shape=[NUM_QUANT,QUANT_SIZE],dtype=tf.float32),name="vecs")
         self.QUANT_SIZE = QUANT_SIZE
@@ -224,7 +236,7 @@ class MainCalc:
     def __init__(self):
         self.convpool1 = Convpool2(3,64,default_activ)
         self.convpool2 = Convpool2(64,128,None)
-        self.quant_block = QuantBlockImg(128,4,32)
+        self.quant_block = QuantBlockImg(256,2,64)
         self.convunpool1 = Deconv2(128,64,default_activ)
         self.convunpool2 = Deconv2(64,3,tf.nn.sigmoid)
 
@@ -253,7 +265,6 @@ mc_update, loss, reconst_l, final_output = mc.calc(place)
 resample_update = mc.periodic_update()
 
 opt = optimizer.minimize(loss)
-
 orig_imgs = []
 orig_filenames = []
 for img_name in os.listdir("data/input_data"):
