@@ -1,11 +1,13 @@
+import os
+os.environ['TF_ENABLE_AUTO_MIXED_PRECISION'] = '1'
 import tensorflow as tf
 import numpy as np
 from PIL import Image
-import os
 import random
 import shutil
 
 FORMAT = 'NHWC'
+BATCH_SIZE = 8
 
 def sqr(x):
     return x * x
@@ -257,7 +259,7 @@ class MainCalc:
         return self.quant_block.resample_bad_vecs()
 
 mc = MainCalc()
-place = tf.placeholder(shape=[4,192,256,3],dtype=tf.float32)
+place = tf.placeholder(shape=[BATCH_SIZE,200,320,3],dtype=tf.float32)
 
 optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
 
@@ -269,11 +271,11 @@ orig_imgs = []
 orig_filenames = []
 for img_name in os.listdir("data/input_data"):
     with Image.open("data/input_data/"+img_name) as img:
-        if img.size[1] == 192:
+        if img.mode == "RGB":
             orig_imgs.append(np.array(img).astype(np.float32)/256.0)
             orig_filenames.append(img_name)
 
-fold_names = [fname.split('.')[0]+"/" for fname in orig_filenames]
+fold_names = [fname.split('.')[0]+"/" for fname in orig_filenames[:50]]
 
 for fold,fname in zip(fold_names,orig_filenames):
     fold_path = "data/result/"+fold
@@ -287,8 +289,10 @@ os.makedirs(SAVE_DIR,exist_ok=True)
 SAVE_NAME = SAVE_DIR+"model.ckpt"
 logfilename = "data/count_log.txt"
 logfile = open(logfilename,'w')
-#print(imgs[0])
-with tf.Session() as sess:
+
+config = tf.ConfigProto()
+config.gpu_options.allow_growth=True
+with tf.Session(config=config) as sess:
     sess.run(tf.global_variables_initializer())
     print_num = 0
     if os.path.exists(SAVE_DIR+"checkpoint"):
@@ -299,51 +303,59 @@ with tf.Session() as sess:
         saver.restore(sess, checkpoint)
 
     batch = []
+    batch_count = 0
     while True:
-        for x in range(5):
+        for x in range(20):
             random.shuffle(imgs)
             tot_loss = 0
             rec_loss = 0
-            count = 0
+            loss_count = 0
             for img in imgs:
                 batch.append(img)
-                if len(batch) == 4:
-                    count += 1
+                if len(batch) == BATCH_SIZE:
+                    batch_count += 1
                     _,_,cur_loss,cur_rec = sess.run([mc_update,opt,loss,reconst_l],feed_dict={
                         place:np.stack(batch)
                     })
+                    loss_count += 1
                     tot_loss += cur_loss
                     rec_loss += cur_rec
                     batch = []
 
-            logfile.write(",".join([str(val) for val in sess.run(mc.quant_block.vector_counts)]))
-            logfile.flush()
-            sess.run(resample_update)
+                    EPOC_SIZE = 100
+                    if batch_count % EPOC_SIZE == 0:
+                        print("epoc ended, loss: {}   {}".format(tot_loss/loss_count,rec_loss/loss_count))
+                        logfile.write(",".join([str(val) for val in sess.run(mc.quant_block.vector_counts)]))
+                        logfile.flush()
+                        sess.run(resample_update)
 
-            print("epoc ended, loss: {}   {}".format(tot_loss/count,rec_loss/count))
+                        tot_loss = 0
+                        rec_loss = 0
+                        loss_count = 0
 
-        print("save started")
-        print_num += 1
-        saver.save(sess,SAVE_NAME,global_step=print_num)
-        img_batch = []
-        fold_batch = []
-        for count,(img,fold) in enumerate(zip(orig_imgs,fold_names)):
-            img_batch.append((img))
-            fold_batch.append((fold))
-            if len(img_batch) == 4:
-                batch_outs = sess.run(final_output,feed_dict={
-                    place:np.stack(img_batch)
-                })
-                pixel_vals = (batch_outs * 256).astype(np.uint8)
-                for out,out_fold in zip(pixel_vals,fold_batch):
-                    #print(out.shape)
-                    img = Image.fromarray(out)
-                    img_path = "data/result/{}{}.jpg".format(out_fold,print_num)
-                    #print(img_path)
-                    img.save(img_path)
-                img_batch = []
-                fold_batch = []
-        print("save finished")
+                        if batch_count % (EPOC_SIZE*10) == 0:
+                            print("save started")
+                            print_num += 1
+                            saver.save(sess,SAVE_NAME,global_step=print_num)
+                            img_batch = []
+                            fold_batch = []
+                            for count,(img,fold) in enumerate(zip(orig_imgs,fold_names)):
+                                img_batch.append((img))
+                                fold_batch.append((fold))
+                                if len(img_batch) == BATCH_SIZE:
+                                    batch_outs = sess.run(final_output,feed_dict={
+                                        place:np.stack(img_batch)
+                                    })
+                                    pixel_vals = (batch_outs * 256).astype(np.uint8)
+                                    for out,out_fold in zip(pixel_vals,fold_batch):
+                                        #print(out.shape)
+                                        img = Image.fromarray(out)
+                                        img_path = "data/result/{}{}.jpg".format(out_fold,print_num)
+                                        #print(img_path)
+                                        img.save(img_path)
+                                    img_batch = []
+                                    fold_batch = []
+                            print("save finished")
 
 
 #print(out.shape)
