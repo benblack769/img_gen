@@ -238,7 +238,7 @@ class MainCalc:
     def __init__(self):
         self.convpool1 = Convpool2(3,64,default_activ)
         self.convpool2 = Convpool2(64,128,None)
-        self.quant_block = QuantBlockImg(256,2,64)
+        self.quant_block = QuantBlockImg(128,4,32)
         self.convunpool1 = Deconv2(128,64,default_activ)
         self.convunpool2 = Deconv2(64,3,tf.nn.sigmoid)
 
@@ -334,8 +334,8 @@ with tf.Session(config=config) as sess:
                         loss_count = 0
 
                         if batch_count % (EPOC_SIZE*10) == 0:
-                            print("save started")
                             print_num += 1
+                            print("save {} started".format(print_num))
                             saver.save(sess,SAVE_NAME,global_step=print_num)
                             img_batch = []
                             fold_batch = []
@@ -355,7 +355,7 @@ with tf.Session(config=config) as sess:
                                         img.save(img_path)
                                     img_batch = []
                                     fold_batch = []
-                            print("save finished")
+                            print("save {} finished".format(print_num))
 
 
 #print(out.shape)
