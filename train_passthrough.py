@@ -105,9 +105,9 @@ class Convpool2:
         self.POOL_SHAPE = [2,2]
         self.out_activ = out_activ
         self.use_batchnorm = use_batchnorm
-        self.bn1 = tf.layers.BatchNormalization()
+        self.bn1 = tf.layers.BatchNormalization(momentum=0.9)
         if self.use_batchnorm:
-            self.bn2 = tf.layers.BatchNormalization()
+            self.bn2 = tf.layers.BatchNormalization(momentum=0.9)
         self.conv1 = Conv2d(in_dim,out_dim,self.CONV_SIZE,None)
         self.conv2 = Conv2d(out_dim,out_dim,self.CONV_SIZE,None,strides=self.POOL_SHAPE)
 
@@ -141,7 +141,7 @@ class Deconv2:
 
 
 def distances(vecs1,vecs2):
-    return tf.matmul(vecs1,vecs2,transpose_b=True)
+    #return tf.matmul(vecs1,vecs2,transpose_b=True)
     vecs2 = tf.transpose(vecs2)
     dists = (tf.reduce_sum(sqr(vecs1), axis=1, keepdims=True)
              - 2 * tf.matmul(vecs1, vecs2)
@@ -149,15 +149,16 @@ def distances(vecs1,vecs2):
     return dists
 
 def gather_multi_idxs(qu_vecs,chosen_idxs):
-    idx_shape = chosen_idxs.get_shape().as_list()
-    qu_shape = qu_vecs.get_shape().as_list()
-    idx_add = tf.range(qu_shape[0],dtype=tf.int64)*qu_shape[1] + chosen_idxs
-    idx_transform = tf.reshape(idx_add,[prod(idx_shape)])
-    rqu_vecs = tf.reshape(qu_vecs,[qu_shape[0]*qu_shape[1],qu_shape[2]])
+    #idx_shape = chosen_idxs.get_shape().as_list()
+    #qu_shape = qu_vecs.get_shape().as_list()
+    #idx_add = tf.range(qu_shape[0],dtype=tf.int64)*qu_shape[1] + chosen_idxs
+    #idx_transform = tf.reshape(idx_add,[prod(idx_shape)])
+    #rqu_vecs = tf.reshape(qu_vecs,[qu_shape[0]*qu_shape[1],qu_shape[2]])
 
-    closest_vec_values = tf.gather(rqu_vecs,idx_transform,axis=0)
+    #closest_vec_values = tf.gather(rqu_vecs,idx_transform,axis=0)
+    combined_vec_vals = tf.gather(qu_vecs,chosen_idxs,axis=0)
 
-    combined_vec_vals = tf.reshape(closest_vec_values,[idx_shape[0],qu_shape[0]*qu_shape[2]])
+    #combined_vec_vals = tf.reshape(closest_vec_values,[idx_shape[0],qu_shape[0]*qu_shape[2]])
 
     return combined_vec_vals
 
@@ -169,22 +170,39 @@ def quant_calc(qu_vecs,chosen_idxs,in_vecs):
         return tf.zeros_like(qu_vecs),tf.zeros_like(chosen_idxs),dy
     return closest_vec_values,grad
 
+def assign_moving_average(var,cur_val,decay):
+    new_var = var * decay + cur_val * (1-decay)
+    print(new_var.shape)
+    print(var.shape)
+    update = tf.assign(var,new_var)
+    return new_var,update
+
+
 class QuantBlock:
     def __init__(self,QUANT_SIZE,NUM_QUANT,QUANT_DIM):
-        init_vals = tf.random_normal([NUM_QUANT,QUANT_SIZE,QUANT_DIM],dtype=tf.float32)*0.1
+        init_vals = tf.random_normal([QUANT_SIZE,QUANT_DIM],dtype=tf.float32)*0.1
         self.vectors = tf.Variable(init_vals,name="vecs")
-        self.vector_counts = tf.Variable(tf.zeros(shape=[NUM_QUANT,QUANT_SIZE],dtype=tf.float32),name="vecs")
+        self.vector_counts = tf.Variable(tf.zeros(shape=[QUANT_SIZE],dtype=tf.float32),name="vecs")
+
+        self._ema_cluster_size = tf.Variable(tf.zeros([QUANT_SIZE],dtype=tf.float32))
+        ema_init = tf.reshape(init_vals,[QUANT_SIZE,QUANT_DIM])
+        self._ema_w = tf.Variable(ema_init,name='ema_dw')
+
         self.QUANT_SIZE = QUANT_SIZE
         self.QUANT_DIM = QUANT_DIM
-        self.NUM_QUANT = NUM_QUANT
+        #self.NUM_QUANT = NUM_QUANT
+        self._decay = 0.9
+        self._epsilon=1e-5
 
     def calc(self, input):
         orig_size = input.get_shape().as_list()
-        div_input = tf.reshape(input,[orig_size[0],self.NUM_QUANT,self.QUANT_DIM])
-        dists = tf.einsum("ijk,jmk->ijm",div_input,self.vectors)
+        #div_input = tf.reshape(input,[orig_size[0],self.NUM_QUANT,self.QUANT_DIM])
+        #dists = tf.einsum("ijk,jmk->ijm",div_input,self.vectors)
+        dists = distances(input,self.vectors)
+        #cluster_size = tf.reshape(,[self.QUANT_SIZE])
+        dists = dists * (1.0+(tf.sqrt(self._ema_cluster_size)))
 
         #dists = distances(input,self.vectors)
-
         #soft_vals = tf.softmax(,axis=1)
         #inv_dists = 1.0/(dists+0.000001)
         #closest_vec_idx = tf.multinomial((inv_dists),1)
@@ -196,10 +214,38 @@ class QuantBlock:
         other_losses, update = self.calc_other_vals(input,closest_vec_idx)
         return out_val, other_losses, update
 
+    def codebook_update(self,input,closest_vec_idxs):
+        #BATCH_SIZE = input.get_shape().as_list()[0]
+        #closest_vec_idxs = tf.reshape(closest_vec_idxs,[BATCH_SIZE,])
+        closest_vec_onehots = tf.one_hot(closest_vec_idxs,self.QUANT_SIZE)
+
+        updated_ema_cluster_size,cluster_update = assign_moving_average(
+          self._ema_cluster_size, tf.reduce_sum(closest_vec_onehots, axis=0), self._decay)
+        dw = tf.matmul(input, closest_vec_onehots, transpose_a=True)
+        dw = tf.transpose(dw)
+        #print(dw)
+        #dw = closest_vec_vals
+        #exit(0)
+        updated_ema_w,ema_w_update = assign_moving_average(self._ema_w, dw,
+                                                            self._decay)
+        n = tf.reduce_sum(updated_ema_cluster_size)
+        updated_ema_cluster_size = (
+          (updated_ema_cluster_size + self._epsilon)
+          / (n + self.QUANT_SIZE * self._epsilon) * n)
+
+        normalised_updated_ema_w = (
+          updated_ema_w / tf.reshape(updated_ema_cluster_size, [self.QUANT_SIZE,1]))
+        #update_reshaped = tf.reshape(normalised_updated_ema_w,[self.NUM_QUANT,self.QUANT_SIZE,self.QUANT_DIM])
+        update_w = tf.assign(self.vectors, normalised_updated_ema_w)
+
+        all_updates = tf.group([update_w,ema_w_update,cluster_update])
+        return all_updates
+
     def calc_other_vals(self,input,closest_vec_idx):
         closest_vec_values = gather_multi_idxs(self.vectors,closest_vec_idx)
 
         codebook_loss = tf.reduce_sum(sqr(closest_vec_values - tf.stop_gradient(input)))
+        #codebook_update = self.codebook_update(input,closest_vec_idx)
 
         beta_val = 0.25 #from https://arxiv.org/pdf/1906.00446.pdf
         commitment_loss = tf.reduce_sum(beta_val * sqr(tf.stop_gradient(closest_vec_values) - input))
@@ -207,8 +253,9 @@ class QuantBlock:
         idx_one_hot = tf.one_hot(closest_vec_idx,self.QUANT_SIZE)
         total = tf.reduce_sum(idx_one_hot,axis=0)
         update_counts = tf.assign(self.vector_counts,self.vector_counts+total)
+        #combined_update = tf.group([codebook_update,update_counts])
 
-        return commitment_loss + codebook_loss,update_counts
+        return commitment_loss +codebook_loss,update_counts#combined_update
 
     def resample_bad_vecs(self):
         #sample_vals = tf.random_normal([self.QUANT_SIZE,self.QUANT_DIM],dtype=tf.float32)
@@ -238,16 +285,17 @@ class MainCalc:
     def __init__(self):
         self.convpool1 = Convpool2(3,64,default_activ)
         self.convpool2 = Convpool2(64,128,None)
-        self.quant_block = QuantBlockImg(128,4,32)
+        self.quant_block = QuantBlockImg(256,1,128)
         self.convunpool1 = Deconv2(128,64,default_activ)
         self.convunpool2 = Deconv2(64,3,tf.nn.sigmoid)
+
 
     def calc(self,input):
         out1 = self.convpool1.calc(input)
         out2 = self.convpool2.calc(out1)
         quant,quant_loss,update = self.quant_block.calc(out2)
         print(quant.shape)
-        dec1 = self.convunpool1.calc(out2)
+        dec1 = self.convunpool1.calc(quant)
         decoded_final = self.convunpool2.calc(dec1)
 
         reconstr_loss = tf.reduce_sum(sqr(decoded_final - input))
@@ -269,7 +317,7 @@ resample_update = mc.periodic_update()
 opt = optimizer.minimize(loss)
 orig_imgs = []
 orig_filenames = []
-for img_name in os.listdir("data/input_data"):
+for img_name in os.listdir("data/input_data")[:2000]:
     with Image.open("data/input_data/"+img_name) as img:
         if img.mode == "RGB":
             orig_imgs.append(np.array(img).astype(np.float32)/256.0)
@@ -325,7 +373,7 @@ with tf.Session(config=config) as sess:
                     EPOC_SIZE = 100
                     if batch_count % EPOC_SIZE == 0:
                         print("epoc ended, loss: {}   {}".format(tot_loss/loss_count,rec_loss/loss_count))
-                        logfile.write(",".join([str(val) for val in sess.run(mc.quant_block.vector_counts)]))
+                        logfile.write(",".join([str(val) for val in sess.run(mc.quant_block.vector_counts)])+"\n")
                         logfile.flush()
                         sess.run(resample_update)
 
