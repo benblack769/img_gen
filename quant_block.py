@@ -80,7 +80,7 @@ class QuantBlock:
 
         out_val = quant_calc(self.vectors,closest_vec_idx,input)
         other_losses, update = self.calc_other_vals(input,closest_vec_idx)
-        return out_val, other_losses, update
+        return out_val, other_losses, update,closest_vec_idx
 
     def codebook_update(self,input,closest_vec_idxs):
         #BATCH_SIZE = input.get_shape().as_list()[0]
@@ -138,6 +138,13 @@ class QuantBlock:
         tot_assign = tf.group([vec_assign,zero_assign,ema_assign])
         return zero_assign#tot_assign
 
+    def vars(self,name):
+        return [
+            (name+"vecs",self.vectors),
+            (name+"emq_w",self._ema_cluster_size),
+            (name+"vecs",self._ema_w),
+        ]
+
 def prod(l):
     p = 1
     for x in l:
@@ -149,7 +156,8 @@ class QuantBlockImg(QuantBlock):
         input = tf.transpose(input,perm=(0,2,3,1))
         in_shape = input.get_shape().as_list()
         flat_val = tf.reshape(input,[prod(in_shape[:3]),in_shape[3]])
-        out,o1,o2 = QuantBlock.calc(self,flat_val)
+        out,o1,o2,closest = QuantBlock.calc(self,flat_val)
         restored = tf.reshape(out,in_shape)
         restored = tf.transpose(restored,perm=(0,3,1,2))
-        return restored,o1,o2
+        resh_closest = tf.reshape(closest,[in_shape[0],in_shape[1],in_shape[2],closest.shape[1]])
+        return restored,o1,o2,resh_closest

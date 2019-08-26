@@ -41,8 +41,8 @@ class Conv2d:
                     self.activation(linval))
         return activated
 
-    def vars(self):
-        return [self.weights,self.biases]
+    def vars(self,name):
+        return [(name,self.weights)]
 
 
 def Conv1x1(input_dim,out_dim,activation):
@@ -85,8 +85,9 @@ class ConvTrans2d:
                     self.activation(linval))
         return activated
 
-    def vars(self):
-        return [self.weights,self.biases]
+    def vars(self,name):
+        return [(name,self.weights)]
+
 
 def avgpool2d(input,window_shape):
     return tf.nn.pool(input,
@@ -134,6 +135,9 @@ class Convpool2:
         #cur_vec = avgpool2d(cur_vec,self.POOL_SHAPE)
         return cur_vec
 
+    def vars(self,name):
+        return self.conv1.vars(name+"l1")+self.conv2.vars(name+"l2")
+
 
 class Deconv2:
     def __init__(self,in_dim,out_dim,out_activ,out_shape):
@@ -148,3 +152,6 @@ class Deconv2:
         cur_vec = self.conv2.calc(cur_vec)
         #cur_vec = avgpool2d(cur_vec,self.POOL_SHAPE)
         return cur_vec
+
+    def vars(self,name):
+        return self.conv1.vars(name+"l1")+self.conv2.vars(name+"l2")
