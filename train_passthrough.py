@@ -301,4 +301,4 @@ def calc_closest_vals():
                 np.save(new_path+"closest3.npy",closest3[bidx])
 
 if __name__ == "__main__":
-    calc_closest_vals()
+    main()

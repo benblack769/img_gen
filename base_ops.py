@@ -24,7 +24,8 @@ class Conv2d:
         out_shape = conv_size+[input_dim]+[out_dim]
         init_vals = tf.initializers.glorot_normal()(out_shape)
         self.weights = tf.Variable(init_vals,name="weights")
-        #self.biases = tf.Variable(tf.ones(out_dim)*0.01,name="biases")
+        self.biases = tf.Variable(tf.ones([1,out_dim,1,1])*0.01,name="biases")
+        #self.bn = tf.layers.BatchNormalization(axis=1)
         self.activation = activation
         self.strides = strides
         self.padding = padding
@@ -36,7 +37,8 @@ class Conv2d:
             strides=self.strides,
             data_format=FORMAT,
             padding=self.padding)
-        #affine_val = linval + self.biases
+        #linval = self.bn(linval)
+        linval = linval + self.biases
         activated = (linval if self.activation is None else
                     self.activation(linval))
         return activated
@@ -107,7 +109,7 @@ def unpool(tens4d,factor):
     return back
 
 def default_activ(input):
-    return tf.nn.relu(input)
+    return tf.nn.leaky_relu(input)
 
 
 class Convpool2:
