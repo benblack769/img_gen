@@ -128,8 +128,8 @@ class MainCalc:
     def __init__(self):
         self.gen = Gen()
         self.discrim = Discrim()
-        self.discrim_optim = tf.train.RMSPropOptimizer(learning_rate=0.0001,decay=0.9)
-        self.gen_optim = tf.train.RMSPropOptimizer(learning_rate=0.0001,decay=0.9)
+        self.discrim_optim = tf.train.RMSPropOptimizer(learning_rate=0.001,decay=0.9)
+        self.gen_optim = tf.train.RMSPropOptimizer(learning_rate=0.001,decay=0.9)
         self.bn_grads = tf.layers.BatchNormalization(axis=1)
 
     def calc_loss(self,true_imgs,old_img,repr_idxs):
