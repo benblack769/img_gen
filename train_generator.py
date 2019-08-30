@@ -25,8 +25,8 @@ def get_out_shape(level):
 def sqr(x):
     return x * x
 
-IMG_LEVEL = 32
-SECOND_LEVEL = 64
+IMG_LEVEL = 48
+SECOND_LEVEL = 96
 THIRD_LEVEL = 128
 FOURTH_LEVEL = 192
 FIFTH_LEVEL = 256
@@ -124,18 +124,54 @@ class Gen:
         vars = [var for name, var in var_names]
         return vars
 
+class ReprGen:
+    def __init__(self):
+        self.convpool1 = Convpool2(3,IMG_LEVEL,default_activ)
+        self.convpool2 = Convpool2(IMG_LEVEL,SECOND_LEVEL,default_activ)
+
+        self.quanttrans1 = Conv1x1(SECOND_LEVEL,SECOND_LEVEL,None)
+        self.quant_block1 = QuantBlockImg(128,4,SECOND_LEVEL//4)
+
+        self.bn1a = tf.layers.BatchNormalization(axis=1)
+
+
+    def calc(self,input):
+        out1 = self.convpool1.calc(input)
+        out2 = self.convpool2.calc(out1)
+        outfin = self.quanttrans1.calc(out2)
+
+        quant1,quant_loss1,update1,closest1 = self.quant_block1.calc(self.bn1a(outfin,training=True))
+        '''dec2 = self.deconv2.calc(quant1)
+        dec1 = self.deconv1.calc(dec2)
+        decoded_final = dec1
+
+        reconstr_loss = tf.reduce_sum(sqr(decoded_final - input))
+
+        quant_loss = quant_loss1 + quant_loss2 + quant_loss3
+        tot_loss = reconstr_loss + quant_loss
+        tot_update = tf.group([update1,update2,update3])
+        closest_list = [closest1,closest2,closest3]'''
+        return quant1,quant_loss1,update1,closest1#
+
+    def periodic_update(self):
+        return tf.group([
+            self.quant_block1.resample_bad_vecs(),
+        ])
+
 class MainCalc:
     def __init__(self):
         self.gen = Gen()
         self.discrim = Discrim()
+        self.repr_gen = ReprGen()
         self.discrim_optim = tf.train.RMSPropOptimizer(learning_rate=0.001,decay=0.9)
         self.gen_optim = tf.train.RMSPropOptimizer(learning_rate=0.001,decay=0.9)
         self.bn_grads = tf.layers.BatchNormalization(axis=1)
 
     def calc_loss(self,true_imgs,old_img,repr_idxs):
-        REPR_DEPTH = 256
-        repr = tf.one_hot(repr_idxs,depth=REPR_DEPTH)
-        repr = tf.reshape(repr,[BATCH_SIZE,REPR_DEPTH]+get_out_shape(3))
+        #REPR_DEPTH = 256
+        #repr = tf.one_hot(repr_idxs,depth=REPR_DEPTH)
+        #repr = tf.reshape(repr,[BATCH_SIZE,REPR_DEPTH]+get_out_shape(3))
+        repr = self.repr_gen.calc(true_imgs)
 
         new_img = self.gen.calc(old_img,repr)
 
@@ -149,8 +185,8 @@ class MainCalc:
 
         reconstr_l = 0.1*tf.reduce_mean(sqr(new_img - true_imgs))
 
-        minimize_discrim_op = self.discrim_optim.minimize(diff_costs)#,var_list=self.discrim.vars())
-        minimize_gen_op = self.gen_optim.minimize(reconstr_l)#,var_list=self.gen.vars())
+        minimize_discrim_op = self.discrim_optim.minimize(diff_costs,var_list=self.discrim.vars())
+        minimize_gen_op = self.gen_optim.minimize(reconstr_l,var_list=self.gen.vars())
 
         minimize_op = tf.group([minimize_gen_op,minimize_discrim_op])
 
@@ -181,8 +217,8 @@ def main():
     true_img = tf.placeholder(shape=[BATCH_SIZE,200,320,3],dtype=tf.uint8)
     transposed_img = tf.transpose(true_img,(0,3,1,2))
     float_img = tf.cast(transposed_img,tf.float32) / 256.0
-    cmp_idxs = tf.placeholder(shape=[BATCH_SIZE]+get_out_shape(3)+[1],dtype=tf.uint16)
-    cmp_idx32 = tf.cast(cmp_idxs,tf.int32)
+    #cmp_idxs = tf.placeholder(shape=[BATCH_SIZE]+get_out_shape(3)+[1],dtype=tf.uint16)
+    #cmp_idx32 = tf.cast(cmp_idxs,tf.int32)
 
     mc_update, diff_l, reconst_l, final_img = mc.recursive_calc(float_img,cmp_idx32)
     # batchnorm_updates = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
