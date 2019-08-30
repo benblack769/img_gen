@@ -137,11 +137,13 @@ class MainCalc:
 
 def main():
     mc = MainCalc()
-    place = tf.placeholder(shape=[BATCH_SIZE,3,200,320],dtype=tf.float32)
+    place = tf.placeholder(shape=[BATCH_SIZE,200,320,3],dtype=tf.uint8)
+    #img_trans = tf.transpose(place,(0,3,1,2))
+    img_place = tf.cast(place,dtype=tf.float32)/256.0
 
     optimizer = tf.train.AdamOptimizer(learning_rate=0.0001)
 
-    mc_update, loss, reconst_l, final_output,closest_list = mc.calc(place)
+    mc_update, loss, reconst_l, final_output,closest_list = mc.calc(img_place)
     resample_update = mc.periodic_update()
 
     batchnorm_updates = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -156,8 +158,7 @@ def main():
         with Image.open("data/input_data/"+img_name) as img:
             if img.mode == "RGB":
                 arr = np.array(img)
-                arr = np.transpose(arr,(2,0,1))
-                orig_imgs.append(arr.astype(np.float32)/256.0)
+                orig_imgs.append(arr)
                 orig_filenames.append(img_name)
 
     fold_names = [fname.split('.')[0]+"/" for fname in orig_filenames[:50]]

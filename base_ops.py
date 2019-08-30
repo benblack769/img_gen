@@ -1,6 +1,6 @@
 import tensorflow as tf
 
-FORMAT = 'NCHW'
+FORMAT = 'NHWC'
 
 class Dense:
     def __init__(self,input_dim,out_dim,activation):
@@ -24,7 +24,7 @@ class Conv2d:
         out_shape = conv_size+[input_dim]+[out_dim]
         init_vals = tf.initializers.glorot_normal()(out_shape)
         self.weights = tf.Variable(init_vals,name="weights")
-        self.biases = tf.Variable(tf.ones([1,out_dim,1,1])*0.01,name="biases")
+        self.biases = tf.Variable(tf.ones([1,1,1,out_dim])*0.01,name="biases")
         #self.bn = tf.layers.BatchNormalization(axis=1)
         self.activation = activation
         self.strides = strides
@@ -72,9 +72,9 @@ class ConvTrans2d:
         in_shape = input_vec.get_shape().as_list()
         out_shape = [
             in_shape[0],
-            self.out_dim,
             self.out_shape[0],
             self.out_shape[1],
+            self.out_dim,
         ]
         linval = tf.nn.conv2d_transpose(
             value=input_vec,
@@ -98,15 +98,6 @@ def avgpool2d(input,window_shape):
         padding="SAME",
         strides=window_shape,
         )
-
-def unpool(tens4d,factor):
-    shape = tens4d.get_shape().as_list()
-    spread_shape = [shape[0],shape[1],1,shape[2],1,shape[3]]
-    reshaped = tf.reshape(tens4d,spread_shape)
-    tiled = tf.tile(reshaped,[1,1,factor,1,factor,1])
-    new_shape = [shape[0],shape[1],factor*shape[2],factor*shape[3]]
-    back = tf.reshape(tiled,new_shape)
-    return back
 
 def default_activ(input):
     return tf.nn.leaky_relu(input)

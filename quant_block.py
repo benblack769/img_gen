@@ -153,11 +153,9 @@ def prod(l):
 
 class QuantBlockImg(QuantBlock):
     def calc(self,input):
-        input = tf.transpose(input,perm=(0,2,3,1))
         in_shape = input.get_shape().as_list()
         flat_val = tf.reshape(input,[prod(in_shape[:3]),in_shape[3]])
         out,o1,o2,closest = QuantBlock.calc(self,flat_val)
         restored = tf.reshape(out,in_shape)
-        restored = tf.transpose(restored,perm=(0,3,1,2))
         resh_closest = tf.reshape(closest,[in_shape[0],in_shape[1],in_shape[2],closest.shape[1]])
         return restored,o1,o2,resh_closest
