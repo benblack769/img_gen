@@ -9,9 +9,9 @@ from base_ops import default_activ,Convpool2,Conv2d,Conv1x1,Conv1x1Upsample,Conv
 from quant_block import QuantBlockImg
 from npy_saver import NpySaver
 
-BATCH_SIZE = 8
+BATCH_SIZE = 64
 
-IMG_SIZE = (200,320)
+IMG_SIZE = (96,96)
 
 def round_up_div(num,denom):
     return (num+denom-1) // denom
@@ -25,8 +25,8 @@ def get_out_shape(level):
 def sqr(x):
     return x * x
 
-IMG_LEVEL = 32
-SECOND_LEVEL = 64
+IMG_LEVEL = 64
+SECOND_LEVEL = 96
 THIRD_LEVEL = 128
 FOURTH_LEVEL = 192
 FIFTH_LEVEL = 256
@@ -41,7 +41,7 @@ class MainCalc:
         self.convpool6 = Convpool2(FIFTH_LEVEL,ZIXTH_LEVEL,None)
 
         self.quanttrans1 = Conv1x1(SECOND_LEVEL,SECOND_LEVEL,None)
-        self.quant_block1 = QuantBlockImg(256,1,SECOND_LEVEL)
+        self.quant_block1 = QuantBlockImg(256//2,2,SECOND_LEVEL//2)
         self.quanttrans2 = Conv1x1(FOURTH_LEVEL,FOURTH_LEVEL,None)
         self.quant_block2 = QuantBlockImg(256,4,FOURTH_LEVEL//4)
         self.quant_block3 = QuantBlockImg(256,4,ZIXTH_LEVEL//4)
@@ -137,8 +137,7 @@ class MainCalc:
 
 def main():
     mc = MainCalc()
-    place = tf.placeholder(shape=[BATCH_SIZE,200,320,3],dtype=tf.uint8)
-    #img_trans = tf.transpose(place,(0,3,1,2))
+    place = tf.placeholder(shape=[BATCH_SIZE,96,96,3],dtype=tf.uint8)
     img_place = tf.cast(place,dtype=tf.float32)/256.0
 
     optimizer = tf.train.AdamOptimizer(learning_rate=0.0001)
@@ -209,7 +208,7 @@ def main():
                         rec_loss += cur_rec
                         batch = []
 
-                        EPOC_SIZE = 100
+                        EPOC_SIZE = 300
                         if batch_count % EPOC_SIZE == 0:
                             print("epoc ended, loss: {}   {}".format(tot_loss/loss_count,rec_loss/loss_count))
                             lossval_num += 1
@@ -253,9 +252,10 @@ def main():
 
 def calc_closest_vals():
     mc = MainCalc()
-    place = tf.placeholder(shape=[BATCH_SIZE,3,200,320],dtype=tf.float32)
+    place = tf.placeholder(shape=[BATCH_SIZE,96,96,3],dtype=tf.uint8)
+    img_place = tf.cast(place,dtype=tf.float32)/256.0
 
-    mc_update, loss, reconst_l, final_output,closest_list = mc.calc(place)
+    mc_update, loss, reconst_l, final_output,closest_list = mc.calc(img_place)
 
     orig_imgs = []
     orig_filenames = []
@@ -263,8 +263,7 @@ def calc_closest_vals():
         with Image.open("data/input_data/"+img_name) as img:
             if img.mode == "RGB":
                 arr = np.array(img)
-                arr = np.transpose(arr,(2,0,1))
-                orig_imgs.append(arr.astype(np.float32)/256.0)
+                orig_imgs.append(arr)
                 orig_filenames.append(img_name)
 
     full_fold_names = [fname.split('.')[0]+"/" for fname in orig_filenames]
@@ -302,4 +301,4 @@ def calc_closest_vals():
                 np.save(new_path+"closest3.npy",closest3[bidx])
 
 if __name__ == "__main__":
-    main()
+    calc_closest_vals()
