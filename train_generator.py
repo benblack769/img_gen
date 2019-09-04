@@ -106,9 +106,9 @@ class Discrim:
 
         diff3 = (tf.reduce_mean(l3img * repr3out))*THIRD_LEVEL
         diff4 = (tf.reduce_mean(l4img * repr4out))*FOURTH_LEVEL
-        d1 = (calc_diff(diff1))
-        d2 = (calc_diff(diff2))
-        fin_loss =  diff3+diff4+d1+d2
+        #d1 = (calc_diff(diff1))
+        #d2 = (calc_diff(diff2))
+        fin_loss =  diff3+diff4#+d1+d2
         return tf.reshape(fin_loss,[1])
 
     def vars(self):
@@ -289,7 +289,7 @@ def main():
             orig_datas.append((arr,repr))
 
 
-    out_fold_names = full_names[:50]
+    out_fold_names = full_names[:max(BATCH_SIZE,50)]
 
     for fold,fname in zip(out_fold_names,full_names):
         fold_path = "data/gen_result/"+fold + "/"
@@ -361,6 +361,7 @@ def main():
                                     data_batch.append((data))
                                     fold_batch.append((fold))
                                     if len(data_batch) == BATCH_SIZE:
+
                                         img_batch = [img for img,repr in data_batch]
                                         repr_batch = [repr for img,repr in data_batch]
                                         batch_outs = sess.run(final_img,feed_dict={
