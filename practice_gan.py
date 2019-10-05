@@ -9,9 +9,9 @@ from base_ops import default_activ,Convpool2,Conv2d,Conv1x1,Conv1x1Upsample,Conv
 from quant_block import QuantBlockImg
 from npy_saver import NpySaver
 
-BATCH_SIZE = 32
-BATCHS_PER_UPDATE = 4
-UPDATE_COUNT = 2
+BATCH_SIZE = 16
+BATCHS_PER_UPDATE = 8
+UPDATE_COUNT = 4
 
 IMG_SIZE = (96,96)
 
@@ -234,7 +234,7 @@ class MainCalc:
     def __init__(self):
         self.gen = Gen()
         self.discrim = Discrim()
-        self.discrim_optim = tf.train.RMSPropOptimizer(learning_rate=0.0001,decay=0.9)
+        self.discrim_optim = tf.train.RMSPropOptimizer(learning_rate=0.00001,decay=0.9)
         self.gen_optim = tf.train.RMSPropOptimizer(learning_rate=0.0001,decay=0.9)
         self.bn_grads = tf.layers.BatchNormalization(axis=1)
 
@@ -264,7 +264,7 @@ class MainCalc:
         all_diff_costs = []
         all_gen_costs = []
         for i in range(UPDATE_COUNT):
-            diff_costs,gen_cost,new_img,new_img_grad = self.calc_loss_single(true_imgs,cur_hint)
+            diff_costs,gen_cost,new_img,new_img_grad = self.calc_loss_single(true_imgs[i*BATCH_SIZE:(i+1)*BATCH_SIZE],cur_hint)
             all_diff_costs.append(diff_costs)
             all_gen_costs.append(gen_cost)
             cur_hint = tf.concat([new_img,new_img_grad],axis=-1)
@@ -290,7 +290,7 @@ class MainCalc:
 
 def main():
     mc = MainCalc()
-    true_img = tf.placeholder(shape=[BATCH_SIZE,96,96,3],dtype=tf.uint8)
+    true_img = tf.placeholder(shape=[BATCH_SIZE*UPDATE_COUNT,96,96,3],dtype=tf.uint8)
     float_img = tf.cast(true_img,tf.float32) / 256.0
 
     apply_op,add_op,init_op, diff_l, reconst_l,gen_img = mc.calc_updates(float_img)
@@ -307,7 +307,7 @@ def main():
     all_l_updates = tf.group(layer_updates)
 
     orig_datas = []
-    full_names =  os.listdir("data/input_data/")[:1000]
+    full_names =  os.listdir("data/input_data/")
     for img_name in full_names:
         with Image.open("data/input_data/"+img_name) as img:
             if img.mode == "RGB":
@@ -349,7 +349,7 @@ def main():
                 loss_count = 0
                 for data in datas:
                     batch.append(data)
-                    if len(batch) == BATCH_SIZE:
+                    if len(batch) == BATCH_SIZE*UPDATE_COUNT:
                         batch_count += 1
                         img_batch = batch
                         if batch_count % BATCHS_PER_UPDATE != 0:
