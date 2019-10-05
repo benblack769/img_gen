@@ -5,11 +5,12 @@ import numpy as np
 from PIL import Image
 import random
 import shutil
-from base_ops import default_activ,Convpool2,Conv2d,Conv1x1,Conv1x1Upsample,ConvTrans2d,Convpool2,Deconv2
+from base_ops import default_activ,Convpool2,Conv2d,Conv1x1,Conv1x1Upsample,ConvTrans2d,Convpool2,Deconv2,Dense
 from quant_block import QuantBlockImg
 from npy_saver import NpySaver
 
 BATCH_SIZE = 64
+BATCHS_PER_UPDATE = 4
 
 IMG_SIZE = (96,96)
 
@@ -22,6 +23,17 @@ def get_out_dim(dim,level):
 def get_out_shape(level):
     return [get_out_dim(IMG_SIZE[0],level),get_out_dim(IMG_SIZE[1],level)]
 
+def broadcast_shape(tens,level):
+    level_shape = get_out_shape(level)
+    tiled = tf.tile(tens,[1]+level_shape+[1])
+    return tiled
+
+def prod(l):
+    p = 1
+    for v in l:
+        p *= v
+    return p
+
 def sqr(x):
     return x * x
 
@@ -30,7 +42,9 @@ SECOND_LEVEL = 64
 THIRD_LEVEL = 128
 FOURTH_LEVEL = 192
 FIFTH_LEVEL = 256
-ZIXTH_LEVEL = 256
+SIXTH_LEVEL = 256
+
+FLAT_LEVEL = 512
 
 class Discrim:
     def __init__(self):
@@ -38,7 +52,12 @@ class Discrim:
         self.convpool2img = Convpool2(IMG_LEVEL,SECOND_LEVEL,default_activ)
         self.convpool3img = Convpool2(SECOND_LEVEL,THIRD_LEVEL,default_activ)
         self.convpool4img = Convpool2(THIRD_LEVEL,FOURTH_LEVEL,default_activ)
-        self.comb_assess = Conv1x1(FOURTH_LEVEL,1,None)
+        self.convpool5img = Convpool2(FOURTH_LEVEL,FIFTH_LEVEL,default_activ)
+        self.convpool6img = Convpool2(FIFTH_LEVEL,SIXTH_LEVEL,default_activ)
+        #self.denseout1 = Dense(SIXTH_LEVEL*prod(get_out_shape(6)),FLAT_LEVEL,default_activ)
+        #self.denseout2 = Dense(FLAT_LEVEL,1,None)
+
+        self.comb_assess = Conv1x1(SIXTH_LEVEL,1,None)
 
     def calc(self,img):
         cur_img_out = img
@@ -46,16 +65,25 @@ class Discrim:
         cur_img_out = self.convpool2img.calc(cur_img_out)
         cur_img_out = self.convpool3img.calc(cur_img_out)
         cur_img_out = self.convpool4img.calc(cur_img_out)
-        fin_assess = self.comb_assess.calc(cur_img_out)
+        cur_img_out = self.convpool5img.calc(cur_img_out)
+        cur_img_out = self.convpool6img.calc(cur_img_out)
+        cur_img_out = self.comb_assess.calc(cur_img_out)
+        #cur_img_out = tf.reshape(cur_img_out,[BATCH_SIZE,SIXTH_LEVEL*prod(get_out_shape(6))])
+        #cur_img_out = self.denseout1.calc(cur_img_out)
+        #cur_img_out = self.denseout2.calc(cur_img_out)
 
-        return fin_assess
+        return cur_img_out
 
     def updates(self):
         return (
             self.convpool1img.updates() +
             self.convpool2img.updates() +
             self.convpool3img.updates() +
-            self.convpool4img.updates() #+
+            self.convpool4img.updates() +
+            self.convpool5img.updates() +
+            self.convpool6img.updates() #+
+            #self.denseout1.updates() +
+            #self.denseout2.updates() +
             #self.comb_assess.updates()
         )
 
@@ -65,26 +93,35 @@ class Discrim:
             self.convpool2img.vars("") +
             self.convpool3img.vars("") +
             self.convpool4img.vars("") +
+            self.convpool5img.vars("") +
+            self.convpool6img.vars("") +
             self.comb_assess.vars("")
         )
         vars = [var for name, var in var_names]
         return vars
 
-RAND_SIZE = 16
+RAND_SIZE = 32
 class Gen:
     def __init__(self):
-        self.deconv4 = Deconv2(RAND_SIZE,THIRD_LEVEL,default_activ,get_out_shape(4))
-        self.deconv3 = Deconv2(THIRD_LEVEL,SECOND_LEVEL,default_activ,get_out_shape(3))
-        self.deconv2 = Deconv2(SECOND_LEVEL,IMG_LEVEL,default_activ,get_out_shape(2))
+        self.deconv6 = Deconv2(RAND_SIZE,FIFTH_LEVEL,default_activ,get_out_shape(6))
+        self.deconv5 = Deconv2(RAND_SIZE+FIFTH_LEVEL,FOURTH_LEVEL,default_activ,get_out_shape(5))
+        self.deconv4 = Deconv2(RAND_SIZE+FOURTH_LEVEL,THIRD_LEVEL,default_activ,get_out_shape(4))
+        self.deconv3 = Deconv2(RAND_SIZE+THIRD_LEVEL,SECOND_LEVEL,default_activ,get_out_shape(3))
+        self.deconv2 = Deconv2(RAND_SIZE+SECOND_LEVEL,IMG_LEVEL,default_activ,get_out_shape(2))
         self.deconv1 = Deconv2(IMG_LEVEL,3,tf.sigmoid,get_out_shape(1))
 
     def calc(self):
+        def attach_rand(tens,level):
+            return tf.concat([tens,broadcast_shape(rand_inp,level)],axis=-1)
 
-        rand_inp = tf.random.normal(shape=[BATCH_SIZE]+get_out_shape(5)+[RAND_SIZE])
+        rand_inp = tf.random.normal(shape=[BATCH_SIZE,1,1,RAND_SIZE])
+        tiled_rand_inp = broadcast_shape(rand_inp,7)
 
-        deconv4 = self.deconv4.calc(rand_inp)
-        deconv3 = self.deconv3.calc(deconv4)
-        deconv2 = self.deconv2.calc(deconv3)
+        deconv6 = self.deconv6.calc(tiled_rand_inp)
+        deconv5 = self.deconv5.calc(attach_rand(deconv6,6))
+        deconv4 = self.deconv4.calc(attach_rand(deconv5,5))
+        deconv3 = self.deconv3.calc(attach_rand(deconv4,4))
+        deconv2 = self.deconv2.calc(attach_rand(deconv3,3))
         deconv1 = self.deconv1.calc(deconv2)
 
         fin_out = deconv1
@@ -93,6 +130,8 @@ class Gen:
 
     def updates(self):
         return (
+            self.deconv6.updates() +
+            self.deconv5.updates() +
             self.deconv4.updates() +
             self.deconv3.updates() +
             self.deconv2.updates() +
@@ -101,6 +140,8 @@ class Gen:
 
     def vars(self):
         var_names = (
+            self.deconv6.vars("") +
+            self.deconv5.vars("") +
             self.deconv4.vars("") +
             self.deconv3.vars("") +
             self.deconv2.vars("") +
@@ -109,16 +150,33 @@ class Gen:
         vars = [var for name, var in var_names]
         return vars
 
+
+def add_gradients(gradvar_list):
+    add_updates = []
+    var_gradvar_list = []
+    initialize_updates = []
+    for grad,var in gradvar_list:
+        gradvar = tf.Variable(tf.zeros_like(grad),dtype=tf.float32)
+        var_gradvar_list.append((gradvar,var))
+        add_updates.append(tf.assign(gradvar,gradvar+grad))
+        initialize_updates.append(tf.assign(gradvar,tf.zeros_like(grad)))
+
+    return var_gradvar_list,tf.group(add_updates),tf.group(initialize_updates)
+
+def minimize_over_updates(optimizer,gradvar_list):
+    added_gradvars,add_op,init_op = add_gradients(gradvar_list)
+    return optimizer.apply_gradients(added_gradvars),add_op,init_op
+
 class MainCalc:
     def __init__(self):
         self.gen = Gen()
         self.discrim = Discrim()
-        self.discrim_optim = tf.train.RMSPropOptimizer(learning_rate=0.0001,decay=0.9)
+        self.discrim_optim = tf.train.RMSPropOptimizer(learning_rate=0.00001,decay=0.9)
         self.gen_optim = tf.train.RMSPropOptimizer(learning_rate=0.0001,decay=0.9)
         self.bn_grads = tf.layers.BatchNormalization(axis=1)
 
     def updates(self):
-        return  self.discrim.updates()#+self.gen.updates()
+        return  self.discrim.updates()+self.gen.updates()
 
     def calc_loss(self,true_imgs):
         new_img = self.gen.calc()
@@ -131,14 +189,20 @@ class MainCalc:
 
         diff_costs = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=all_diffs,labels=diff_cmp))
 
-        minimize_discrim_op = self.discrim_optim.minimize(diff_costs,var_list=self.discrim.vars())
+        discrim_grads = self.discrim_optim.compute_gradients(diff_costs,var_list=self.discrim.vars())
+        discrim_update_apply,discrim_update_add,discrim_update_init = minimize_over_updates(self.discrim_optim,discrim_grads)
 
         gen_cost = tf.reduce_mean(-false_diffs)
         minimize_gen_op = self.gen_optim.minimize(gen_cost,var_list=self.gen.vars())
+        gen_grads = self.gen_optim.compute_gradients(diff_costs,var_list=self.gen.vars())
+        gen_update_apply,gen_update_add,gen_update_init = minimize_over_updates(self.gen_optim,gen_grads)
 
-        minimize_op = tf.group([minimize_gen_op,minimize_discrim_op])
 
-        return minimize_op,diff_costs,gen_cost,new_img
+        apply_op = tf.group([discrim_update_apply,gen_update_apply])
+        add_op = tf.group([discrim_update_add,gen_update_add])
+        init_op = tf.group([discrim_update_init,gen_update_init])
+
+        return apply_op,add_op,init_op,diff_costs,gen_cost,new_img
 
 
 def main():
@@ -146,7 +210,7 @@ def main():
     true_img = tf.placeholder(shape=[BATCH_SIZE,96,96,3],dtype=tf.uint8)
     float_img = tf.cast(true_img,tf.float32) / 256.0
 
-    mc_update, diff_l, reconst_l,gen_img = mc.calc_loss(float_img)
+    apply_op,add_op,init_op, diff_l, reconst_l,gen_img = mc.calc_loss(float_img)
     gen_img = tf.cast(gen_img*256.0,tf.uint8)
     # batchnorm_updates = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     # print(batchnorm_updates)
@@ -156,7 +220,7 @@ def main():
     batchnorm_updates = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     layer_updates = mc.updates()
     print(batchnorm_updates)
-    mc_update = tf.group([mc_update]+batchnorm_updates)
+    apply_op = tf.group([apply_op]+batchnorm_updates)
     all_l_updates = tf.group(layer_updates)
 
     orig_datas = []
@@ -193,6 +257,7 @@ def main():
 
         batch = []
         batch_count = 0
+        update_count = 0
         while True:
             for x in range(20):
                 random.shuffle(datas)
@@ -203,37 +268,46 @@ def main():
                     batch.append(data)
                     if len(batch) == BATCH_SIZE:
                         batch_count += 1
-                        img_batch = [img for img in batch]
-                        _,dif_l,rec_l = sess.run([mc_update, diff_l, reconst_l],feed_dict={
-                            true_img:np.stack(img_batch),
-                        })
-                        sess.run(all_l_updates)
-                        #print(sess.run(float_img))
-                        loss_count += 1
-                        tot_diff += dif_l
-                        rec_loss += rec_l
-                        batch = []
+                        img_batch = batch
+                        if batch_count % BATCHS_PER_UPDATE != 0:
 
-                        EPOC_SIZE = 50
-                        if batch_count % EPOC_SIZE == 0:
-                            print("epoc ended, loss: {}   {}".format(tot_diff/loss_count,rec_loss/loss_count),flush=True)
-                            lossval_num += 1
+                            _ = sess.run(add_op,feed_dict={
+                                true_img:np.stack(img_batch),
+                            })
+                            batch = []
+                        else:
+                            update_count += 1
+                            _,dif_l,rec_l = sess.run([apply_op, diff_l, reconst_l],feed_dict={
+                                true_img:np.stack(img_batch),
+                            })
+                            sess.run(all_l_updates)
+                            sess.run(init_op)
+                            #print(sess.run(float_img))
+                            loss_count += 1
+                            tot_diff += dif_l
+                            rec_loss += rec_l
+                            batch = []
 
-                            tot_diff = 0
-                            rec_loss = 0
-                            loss_count = 0
+                            EPOC_SIZE = 50
+                            if update_count % EPOC_SIZE == 0:
+                                print("epoc ended, loss: {}   {}".format(tot_diff/loss_count,rec_loss/loss_count),flush=True)
+                                lossval_num += 1
 
-                            if batch_count % (EPOC_SIZE*10) == 0:
-                                print_num += 1
-                                print("save {} started".format(print_num))
-                                saver.save(sess,SAVE_NAME,global_step=print_num)
-                                batch_outs = sess.run(gen_img)
-                                for idx,out in enumerate(batch_outs):
-                                    #print(out.shape)
-                                    img = Image.fromarray(out)
-                                    img_path = "data/prac_gen_result/{}_{}.jpg".format(print_num,idx)
-                                    img.save(img_path)
-                                print("save {} finished".format(print_num))
+                                tot_diff = 0
+                                rec_loss = 0
+                                loss_count = 0
+
+                                if update_count % (EPOC_SIZE*10) == 0:
+                                    print_num += 1
+                                    print("save {} started".format(print_num))
+                                    saver.save(sess,SAVE_NAME,global_step=print_num)
+                                    batch_outs = sess.run(gen_img)
+                                    for idx,out in enumerate(batch_outs):
+                                        #print(out.shape)
+                                        img = Image.fromarray(out)
+                                        img_path = "data/prac_gen_result/{}_{}.jpg".format(print_num,idx)
+                                        img.save(img_path)
+                                    print("save {} finished".format(print_num))
 
 if __name__ == "__main__":
     main()

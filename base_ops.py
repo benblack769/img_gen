@@ -60,16 +60,16 @@ class Conv2d:
         cur_u = tf.reshape(self.specnorm_u,[1,1,1,self.input_dim])
         INP_SIZE = 7
         cur_u = tf.tile(cur_u,[1,INP_SIZE,INP_SIZE,1])
-        print("shape")
-        print(cur_u.shape)
+        #print("shape")
+        #print(cur_u.shape)
         cur_v,_ = conv_in_out(cur_u,self.weights)
-        print(cur_v.shape)
+        #print(cur_v.shape)
         cur_u,_ = conv_out_in(cur_v,self.weights)
-        print(cur_u.shape)
+        #print(cur_u.shape)
         cur_v,_ = conv_in_out(cur_u,self.weights)
-        print(cur_v.shape)
+        #print(cur_v.shape)
         cur_u,mag = conv_out_in(cur_v,self.weights)
-        print(cur_u.shape)
+        #print(cur_u.shape)
 
         DECAY = self.decay
         new_weights = self.weights*DECAY + (1-DECAY)*self.weights/tf.maximum(1.0,mag)
