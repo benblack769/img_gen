@@ -9,8 +9,9 @@ from base_ops import default_activ,Convpool2,Conv2d,Conv1x1,Conv1x1Upsample,Conv
 from quant_block import QuantBlockImg
 from npy_saver import NpySaver
 
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 BATCHS_PER_UPDATE = 4
+UPDATE_COUNT = 2
 
 IMG_SIZE = (96,96)
 
@@ -81,7 +82,8 @@ class Discrim:
             self.convpool3img.updates() +
             self.convpool4img.updates() +
             self.convpool5img.updates() +
-            self.convpool6img.updates() #+
+            self.convpool6img.updates() +
+            self.comb_assess.updates() #+
             #self.denseout1.updates() +
             #self.denseout2.updates() +
             #self.comb_assess.updates()
@@ -101,28 +103,61 @@ class Discrim:
         return vars
 
 RAND_SIZE = 32
+HINT_SIZE = 16
 class Gen:
     def __init__(self):
-        self.deconv6 = Deconv2(RAND_SIZE,FIFTH_LEVEL,default_activ,get_out_shape(6))
-        self.deconv5 = Deconv2(RAND_SIZE+FIFTH_LEVEL,FOURTH_LEVEL,default_activ,get_out_shape(5))
-        self.deconv4 = Deconv2(RAND_SIZE+FOURTH_LEVEL,THIRD_LEVEL,default_activ,get_out_shape(4))
-        self.deconv3 = Deconv2(RAND_SIZE+THIRD_LEVEL,SECOND_LEVEL,default_activ,get_out_shape(3))
-        self.deconv2 = Deconv2(RAND_SIZE+SECOND_LEVEL,IMG_LEVEL,default_activ,get_out_shape(2))
-        self.deconv1 = Deconv2(IMG_LEVEL,3,tf.sigmoid,get_out_shape(1))
+        self.convpool1hint = Convpool2(6,IMG_LEVEL,default_activ)
+        self.convpool2hint = Convpool2(IMG_LEVEL,SECOND_LEVEL,default_activ)
+        self.convpool3hint = Convpool2(SECOND_LEVEL,THIRD_LEVEL,default_activ)
+        self.convpool4hint = Convpool2(THIRD_LEVEL,FOURTH_LEVEL,default_activ)
+        self.convpool5hint = Convpool2(FOURTH_LEVEL,FIFTH_LEVEL,default_activ)
+        self.convpool6hint = Convpool2(FIFTH_LEVEL,SIXTH_LEVEL,default_activ)
 
-    def calc(self):
-        def attach_rand(tens,level):
-            return tf.concat([tens,broadcast_shape(rand_inp,level)],axis=-1)
+        self.hint_condenser1 = Conv1x1(IMG_LEVEL,HINT_SIZE,None)
+        self.hint_condenser2 = Conv1x1(SECOND_LEVEL,HINT_SIZE,None)
+        self.hint_condenser3 = Conv1x1(THIRD_LEVEL,HINT_SIZE,None)
+        self.hint_condenser4 = Conv1x1(FOURTH_LEVEL,HINT_SIZE,None)
+        self.hint_condenser5 = Conv1x1(FIFTH_LEVEL,HINT_SIZE,None)
+        self.hint_condenser6 = Conv1x1(SIXTH_LEVEL,HINT_SIZE,None)
+
+
+        self.deconv6 = Deconv2(RAND_SIZE+HINT_SIZE,FIFTH_LEVEL,default_activ,get_out_shape(6))
+        self.deconv5 = Deconv2(RAND_SIZE+HINT_SIZE+FIFTH_LEVEL,FOURTH_LEVEL,default_activ,get_out_shape(5))
+        self.deconv4 = Deconv2(RAND_SIZE+HINT_SIZE+FOURTH_LEVEL,THIRD_LEVEL,default_activ,get_out_shape(4))
+        self.deconv3 = Deconv2(RAND_SIZE+HINT_SIZE+THIRD_LEVEL,SECOND_LEVEL,default_activ,get_out_shape(3))
+        self.deconv2 = Deconv2(RAND_SIZE+HINT_SIZE+SECOND_LEVEL,IMG_LEVEL,default_activ,get_out_shape(2))
+        self.deconv1 = Deconv2(IMG_LEVEL+HINT_SIZE,3,tf.sigmoid,get_out_shape(1))
+
+        self.hint_batchnorm = tf.layers.BatchNormalization()
+
+    def calc(self,hint_img):
+        hint_img = self.hint_batchnorm(hint_img)
+        hint_data1 = self.convpool1hint.calc(hint_img)
+        hint_data2 = self.convpool2hint.calc(hint_data1)
+        hint_data3 = self.convpool3hint.calc(hint_data2)
+        hint_data4 = self.convpool4hint.calc(hint_data3)
+        hint_data5 = self.convpool5hint.calc(hint_data4)
+        hint_data6 = self.convpool6hint.calc(hint_data5)
+
+        cond_hint1 = self.hint_condenser1.calc(hint_data1)
+        cond_hint2 = self.hint_condenser2.calc(hint_data2)
+        cond_hint3 = self.hint_condenser3.calc(hint_data3)
+        cond_hint4 = self.hint_condenser4.calc(hint_data4)
+        cond_hint5 = self.hint_condenser5.calc(hint_data5)
+        cond_hint6 = self.hint_condenser6.calc(hint_data6)
+
+        def attach_rand(tens,hint,level):
+            return tf.concat([tens,hint,broadcast_shape(rand_inp,level)],axis=-1)
 
         rand_inp = tf.random.normal(shape=[BATCH_SIZE,1,1,RAND_SIZE])
         tiled_rand_inp = broadcast_shape(rand_inp,7)
 
-        deconv6 = self.deconv6.calc(tiled_rand_inp)
-        deconv5 = self.deconv5.calc(attach_rand(deconv6,6))
-        deconv4 = self.deconv4.calc(attach_rand(deconv5,5))
-        deconv3 = self.deconv3.calc(attach_rand(deconv4,4))
-        deconv2 = self.deconv2.calc(attach_rand(deconv3,3))
-        deconv1 = self.deconv1.calc(deconv2)
+        deconv6 = self.deconv6.calc(tf.concat([tiled_rand_inp,cond_hint6],axis=-1))
+        deconv5 = self.deconv5.calc(attach_rand(deconv6,cond_hint5,6))
+        deconv4 = self.deconv4.calc(attach_rand(deconv5,cond_hint4,5))
+        deconv3 = self.deconv3.calc(attach_rand(deconv4,cond_hint3,4))
+        deconv2 = self.deconv2.calc(attach_rand(deconv3,cond_hint2,3))
+        deconv1 = self.deconv1.calc(tf.concat([deconv2,cond_hint1],axis=-1))
 
         fin_out = deconv1
 
@@ -130,6 +165,20 @@ class Gen:
 
     def updates(self):
         return (
+            self.convpool1hint.updates() +
+            self.convpool2hint.updates() +
+            self.convpool3hint.updates() +
+            self.convpool4hint.updates() +
+            self.convpool5hint.updates() +
+            self.convpool6hint.updates() +
+
+            self.hint_condenser1.updates() +
+            self.hint_condenser2.updates() +
+            self.hint_condenser3.updates() +
+            self.hint_condenser4.updates() +
+            self.hint_condenser5.updates() +
+            self.hint_condenser6.updates() +
+
             self.deconv6.updates() +
             self.deconv5.updates() +
             self.deconv4.updates() +
@@ -140,6 +189,20 @@ class Gen:
 
     def vars(self):
         var_names = (
+            self.convpool1hint.vars("") +
+            self.convpool2hint.vars("") +
+            self.convpool3hint.vars("") +
+            self.convpool4hint.vars("") +
+            self.convpool5hint.vars("") +
+            self.convpool6hint.vars("") +
+
+            self.hint_condenser1.vars("") +
+            self.hint_condenser2.vars("") +
+            self.hint_condenser3.vars("") +
+            self.hint_condenser4.vars("") +
+            self.hint_condenser5.vars("") +
+            self.hint_condenser6.vars("") +
+
             self.deconv6.vars("") +
             self.deconv5.vars("") +
             self.deconv4.vars("") +
@@ -171,15 +234,15 @@ class MainCalc:
     def __init__(self):
         self.gen = Gen()
         self.discrim = Discrim()
-        self.discrim_optim = tf.train.RMSPropOptimizer(learning_rate=0.00001,decay=0.9)
+        self.discrim_optim = tf.train.RMSPropOptimizer(learning_rate=0.0001,decay=0.9)
         self.gen_optim = tf.train.RMSPropOptimizer(learning_rate=0.0001,decay=0.9)
         self.bn_grads = tf.layers.BatchNormalization(axis=1)
 
     def updates(self):
         return  self.discrim.updates()+self.gen.updates()
 
-    def calc_loss(self,true_imgs):
-        new_img = self.gen.calc()
+    def calc_loss_single(self,true_imgs,hint_img):
+        new_img = self.gen.calc(hint_img)
 
         true_diffs = self.discrim.calc(true_imgs)
         false_diffs = self.discrim.calc(new_img)
@@ -189,11 +252,29 @@ class MainCalc:
 
         diff_costs = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=all_diffs,labels=diff_cmp))
 
+        gen_cost = tf.reduce_mean(-false_diffs)
+
+        new_img_grad = tf.gradients(ys=gen_cost,xs=new_img,stop_gradients=[hint_img])[0]
+
+        return diff_costs,gen_cost,tf.stop_gradient(new_img),tf.stop_gradient(new_img_grad)
+
+    def calc_updates(self,true_imgs):
+        cur_hint = tf.zeros([BATCH_SIZE,IMG_SIZE[0],IMG_SIZE[1],6])
+
+        all_diff_costs = []
+        all_gen_costs = []
+        for i in range(UPDATE_COUNT):
+            diff_costs,gen_cost,new_img,new_img_grad = self.calc_loss_single(true_imgs,cur_hint)
+            all_diff_costs.append(diff_costs)
+            all_gen_costs.append(gen_cost)
+            cur_hint = tf.concat([new_img,new_img_grad],axis=-1)
+
+        diff_costs = tf.math.accumulate_n(all_diff_costs)/UPDATE_COUNT
+        gen_cost = tf.math.accumulate_n(all_gen_costs)/UPDATE_COUNT
+
         discrim_grads = self.discrim_optim.compute_gradients(diff_costs,var_list=self.discrim.vars())
         discrim_update_apply,discrim_update_add,discrim_update_init = minimize_over_updates(self.discrim_optim,discrim_grads)
-
-        gen_cost = tf.reduce_mean(-false_diffs)
-        minimize_gen_op = self.gen_optim.minimize(gen_cost,var_list=self.gen.vars())
+        #minimize_gen_op = self.gen_optim.minimize(gen_cost,var_list=self.gen.vars())
         gen_grads = self.gen_optim.compute_gradients(diff_costs,var_list=self.gen.vars())
         gen_update_apply,gen_update_add,gen_update_init = minimize_over_updates(self.gen_optim,gen_grads)
 
@@ -204,13 +285,15 @@ class MainCalc:
 
         return apply_op,add_op,init_op,diff_costs,gen_cost,new_img
 
+        #n_apply_op,n_add_op,n_init_op,n_diff_costs,n_gen_cost,n_new_img = self.calc_loss_single(true_imgs,orig_hint)
+
 
 def main():
     mc = MainCalc()
     true_img = tf.placeholder(shape=[BATCH_SIZE,96,96,3],dtype=tf.uint8)
     float_img = tf.cast(true_img,tf.float32) / 256.0
 
-    apply_op,add_op,init_op, diff_l, reconst_l,gen_img = mc.calc_loss(float_img)
+    apply_op,add_op,init_op, diff_l, reconst_l,gen_img = mc.calc_updates(float_img)
     gen_img = tf.cast(gen_img*256.0,tf.uint8)
     # batchnorm_updates = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     # print(batchnorm_updates)

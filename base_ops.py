@@ -49,7 +49,7 @@ class Conv2d:
         self.biases = tf.Variable(tf.ones([out_dim])*0.01,name="biases",use_resource=True)
         self.specnorm_u = tf.Variable(tf.ones([input_dim])/input_dim,name="specnorm_u",use_resource=True)
         self.decay = tf.Variable(tf.ones([]),name="decay",use_resource=True)
-        self.bn = tf.layers.BatchNormalization(axis=1)
+        self.bn = tf.layers.BatchNormalization()
         self.activation = activation
         self.strides = strides
         self.padding = padding
